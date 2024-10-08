@@ -364,7 +364,8 @@ int main(void)
         printf("\033[32m>_\033[0m "); // Display prompt in green (I love green)
         if (fgets(command, MAX_LINE, stdin) == NULL)
         {
-            break; // Exit on input error
+            perror("Failed to read command");
+            exit(EXIT_FAILURE);
         }
 
         // Skip if the input is empty or only contains whitespace
