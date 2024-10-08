@@ -29,7 +29,7 @@ void handle_signal(int sig)
 {
     if (sig == SIGINT)
     {
-        write(STDOUT_FILENO, "\nCaught SIGINT. Type 'exit' to exit.\n", 38);
+        printf("\nCaught SIGINT. Type 'exit' to exit.😀\n");
     }
 }
 
