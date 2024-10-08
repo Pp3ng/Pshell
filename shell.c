@@ -100,6 +100,7 @@ void execute_command(char *command)
     // Check for redirection
     char *infile = NULL;            // Input file for redirection
     char *outfile = NULL;           // Output file for redirection
+    char *appendfile = NULL;        // Output file for appending
     token = strtok(command, " \n"); // Tokenize the command string
 
     // Parse the command and its arguments
@@ -112,6 +113,10 @@ void execute_command(char *command)
         else if (strcmp(token, ">") == 0)
         {
             outfile = strtok(NULL, " \n"); // Get output filename
+        }
+        else if (strcmp(token, ">>") == 0)
+        {
+            appendfile = strtok(NULL, " \n"); // Get append filename
         }
         else if (strcmp(token, "&") == 0)
         {
@@ -230,6 +235,17 @@ void execute_command(char *command)
             }
             dup2(out_fd, STDOUT_FILENO); // Redirect standard output to the file
             close(out_fd);               // Close the file descriptor
+        }
+        if (appendfile)
+        {
+            int append_fd = open(appendfile, O_WRONLY | O_CREAT | O_APPEND, 0644); // Open append file
+            if (append_fd < 0)
+            {
+                perror("Failed to open append file");
+                exit(EXIT_FAILURE);
+            }
+            dup2(append_fd, STDOUT_FILENO); // Redirect standard output to the file
+            close(append_fd);               // Close the file descriptor
         }
 
         // Execute the command

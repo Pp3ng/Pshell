@@ -9,6 +9,8 @@ This is a simple shell implementation in C. Shell is a command interpreter that 
 - **Redirection**: Input and output redirection (e.g., `ls > output.txt`).
 - **Command History**: Maintain a history of executed commands.
 - **Aliases**: Create and use command aliases.
+- **Environment Variables**: Use environment variables (e.g., `echo $PATH`).
+- **Backend Commands**: Execute backend commands.
 
 ### Built-in Commands
 
