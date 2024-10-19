@@ -7,6 +7,8 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <termios.h>
+#include <limits.h>
+#include <pwd.h>
 
 #define MAX_LINE 1024    // Maximum length of command input
 #define MAX_ARGS 100     // Maximum number of arguments
@@ -31,6 +33,33 @@ void handle_signal(int sig)
     {
         printf("\nCaught SIGINT. Type 'exit' to exit.😀\n");
     }
+}
+
+void print_welcome_message(void)
+{
+    printf("\033[1;36m"); // cyan
+    printf("********************************\n");
+    printf("*     Welcome to PShell         *\n");
+    printf("*     Version 2.0               *\n");
+    printf("*     Type 'help' for commands  *\n");
+    printf("********************************\n");
+    printf("\033[0m"); // reset
+}
+
+void show_help()
+{
+    printf("\033[1;33mShell Commands:\033[0m\n");
+    printf("  cd [dir]        - Change directory\n");
+    printf("  pwd            - Print working directory\n");
+    printf("  ls [options]   - List directory contents\n");
+    printf("  history        - Show command history\n");
+    printf("  alias          - Show/set command aliases\n");
+    printf("  unalias name   - Remove an alias\n");
+    printf("  exit           - Exit the shell\n");
+    printf("\nPipe Operations: cmd1 | cmd2\n");
+    printf("Redirections: >, >>, <\n");
+    printf("Background Jobs: command &\n");
+    printf("Environment Variables: $VAR\n");
 }
 
 void add_to_history(char *command)
@@ -368,16 +397,48 @@ void execute_pipeline(char *command)
     }
 }
 
+char *get_prompt(void)
+{
+    static char prompt[MAX_LINE];
+    char hostname[256];
+    char cwd[PATH_MAX];
+    struct passwd *pw = getpwuid(getuid());
+
+    gethostname(hostname, sizeof(hostname));
+    getcwd(cwd, sizeof(cwd));
+
+    // ensure null-terminated
+    hostname[sizeof(hostname) - 1] = '\0';
+    cwd[sizeof(cwd) - 1] = '\0';
+
+    // get short username, hostname, and cwd
+    char short_username[32], short_hostname[32], short_cwd[64];
+    strncpy(short_username, pw->pw_name, sizeof(short_username) - 1);
+    short_username[sizeof(short_username) - 1] = '\0';
+    strncpy(short_hostname, hostname, sizeof(short_hostname) - 1);
+    short_hostname[sizeof(short_hostname) - 1] = '\0';
+    strncpy(short_cwd, cwd, sizeof(short_cwd) - 1);
+    short_cwd[sizeof(short_cwd) - 1] = '\0';
+
+    // create the prompt string
+    snprintf(prompt, sizeof(prompt), "\033[1;32m%s@%s\033[0m:\033[1;34m%s\033[0m$ ",
+             short_username, short_hostname, short_cwd);
+
+    return prompt;
+}
+
 int main(void)
 {
+    print_welcome_message(); // Print welcome message
+
     char command[MAX_LINE]; // Buffer to store the command input
 
     // Set up signal handling
     signal(SIGINT, handle_signal);
-
+    char *prompt = get_prompt();
     while (1)
     {
-        printf("\033[32m>_\033[0m "); // Display prompt in green (I love green)
+        printf("%s", prompt); // Print the prompt
         if (fgets(command, MAX_LINE, stdin) == NULL)
         {
             perror("Failed to read command");
@@ -402,6 +463,11 @@ int main(void)
         if (!strcmp(command, "history\n"))
         {
             show_history();
+            continue;
+        }
+        if (!strcmp(command, "help\n"))
+        {
+            show_help();
             continue;
         }
         // Replace environment variables
