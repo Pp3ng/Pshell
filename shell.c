@@ -9,6 +9,8 @@
 #include <termios.h>
 #include <limits.h>
 #include <pwd.h>
+#include <time.h>
+#include <sys/time.h>
 
 #define MAX_LINE 1024    // Maximum length of command input
 #define MAX_ARGS 100     // Maximum number of arguments
@@ -397,7 +399,7 @@ void execute_pipeline(char *command)
     }
 }
 
-char *get_prompt(void)
+char *get_prompt(double exec_time)
 {
     static char prompt[MAX_LINE];
     char hostname[256];
@@ -421,10 +423,91 @@ char *get_prompt(void)
     short_cwd[sizeof(short_cwd) - 1] = '\0';
 
     // create the prompt string
-    snprintf(prompt, sizeof(prompt), "\033[1;32m%s@%s\033[0m:\033[1;34m%s\033[0m$ ",
-             short_username, short_hostname, short_cwd);
+    snprintf(prompt, sizeof(prompt), "\033[1;32m%s@%s\033[0m:\033[1;34m%s\033[0m$ \033[1;31m[%.2fs]\033[0m ",
+             short_username, short_hostname, short_cwd, exec_time);
 
     return prompt;
+}
+
+void save_aliases()
+{
+    FILE *file = fopen(".aliases", "w");
+    if (file == NULL)
+    {
+        perror("Failed to open aliases file");
+        return;
+    }
+    for (int i = 0; i < alias_count; i++)
+    {
+        fprintf(file, "%s=%s\n", aliases[i].name, aliases[i].command);
+    }
+    fclose(file);
+}
+
+void load_aliases()
+{
+    FILE *file = fopen(".aliases", "r");
+    if (file == NULL)
+    {
+        return;
+    }
+    char line[MAX_LINE];
+    while (fgets(line, sizeof(line), file))
+    {
+        char *name = strtok(line, "=");
+        char *command = strtok(NULL, "\n");
+        if (name && command)
+        {
+            aliases[alias_count].name = strdup(name);
+            aliases[alias_count].command = strdup(command);
+            alias_count++;
+        }
+    }
+    fclose(file);
+}
+
+void save_history()
+{
+    FILE *file = fopen(".history", "w");
+    if (file == NULL)
+    {
+        perror("Failed to open history file");
+        return;
+    }
+    for (int i = 0; i < history_count; i++)
+    {
+        fprintf(file, "%s", history[i]);
+    }
+    fclose(file);
+}
+
+void load_history()
+{
+    FILE *file = fopen(".history", "r");
+    if (file == NULL)
+    {
+        return;
+    }
+    char line[MAX_LINE];
+    while (fgets(line, sizeof(line), file))
+    {
+        add_to_history(line);
+    }
+    fclose(file);
+}
+
+void auto_complete(char *command)
+{
+    // Simple auto-complete for built-in commands
+    const char *builtins[] = {"cd", "pwd", "ls", "history", "alias", "unalias", "exit", "help", NULL};
+    for (int i = 0; builtins[i] != NULL; i++)
+    {
+        if (strncmp(command, builtins[i], strlen(command)) == 0)
+        {
+            strcpy(command, builtins[i]);
+            return;
+        }
+    }
 }
 
 int main(void)
@@ -435,9 +518,15 @@ int main(void)
 
     // Set up signal handling
     signal(SIGINT, handle_signal);
-    char *prompt = get_prompt();
+
+    // Load aliases and history
+    load_aliases();
+    load_history();
+
+    double exec_time = 0.0;
     while (1)
     {
+        char *prompt = get_prompt(exec_time);
         printf("%s", prompt); // Print the prompt
         if (fgets(command, MAX_LINE, stdin) == NULL)
         {
@@ -470,19 +559,35 @@ int main(void)
             show_help();
             continue;
         }
+
+        // Auto-complete command
+        auto_complete(command);
+
         // Replace environment variables
         replace_env_vars(command);
 
         // Check if the command contains a pipeline
         if (strchr(command, '|'))
         {
+            struct timeval start, end;
+            gettimeofday(&start, NULL);
             execute_pipeline(command); // Execute pipeline command
+            gettimeofday(&end, NULL);
+            exec_time = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
         }
         else
         {
+            struct timeval start, end;
+            gettimeofday(&start, NULL);
             execute_command(command); // Execute regular command
+            gettimeofday(&end, NULL);
+            exec_time = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
         }
     }
+
+    // Save aliases and history
+    save_aliases();
+    save_history();
 
     return EXIT_SUCCESS;
 }
