@@ -1,4 +1,8 @@
 #include <stdio.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096 // Define PATH_MAX if not defined
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -12,23 +16,28 @@
 #include <time.h>
 #include <sys/time.h>
 
+// Constants for maximum sizes
 #define MAX_LINE 1024    // Maximum length of command input
 #define MAX_ARGS 100     // Maximum number of arguments
 #define HISTORY_SIZE 100 // Maximum number of commands in history
 #define ALIAS_SIZE 100   // Maximum number of aliases
 
+// Global variables for command history
 char *history[HISTORY_SIZE]; // Array to store command history
 int history_count = 0;       // Number of commands in history
 
+// Structure to represent command aliases
 typedef struct
 {
     char *name;
     char *command;
 } Alias;
 
+// Global variables for command aliases
 Alias aliases[ALIAS_SIZE]; // Array to store command aliases
 int alias_count = 0;       // Number of aliases
 
+// Signal handler for SIGINT (Ctrl+C)
 void handle_signal(int sig)
 {
     if (sig == SIGINT)
@@ -37,17 +46,19 @@ void handle_signal(int sig)
     }
 }
 
+// Function to print welcome message with ASCII art
 void print_welcome_message(void)
 {
-    printf("\033[1;36m"); // cyan
+    printf("\033[1;36m"); // Set text color to cyan
     printf("********************************\n");
     printf("*     Welcome to PShell         *\n");
     printf("*     Version 2.0               *\n");
     printf("*     Type 'help' for commands  *\n");
     printf("********************************\n");
-    printf("\033[0m"); // reset
+    printf("\033[0m"); // Reset text color
 }
 
+// Function to display available shell commands and features
 void show_help()
 {
     printf("\033[1;33mShell Commands:\033[0m\n");
@@ -64,6 +75,7 @@ void show_help()
     printf("Environment Variables: $VAR\n");
 }
 
+// Function to add a command to the history
 void add_to_history(char *command)
 {
     if (history_count < HISTORY_SIZE)
@@ -72,12 +84,14 @@ void add_to_history(char *command)
     }
     else
     {
+        // If history is full, remove the oldest command and add the new one
         free(history[0]);
         memmove(history, history + 1, (HISTORY_SIZE - 1) * sizeof(char *));
         history[HISTORY_SIZE - 1] = strdup(command);
     }
 }
 
+// Function to display command history
 void show_history()
 {
     for (int i = 0; i < history_count; i++)
@@ -86,6 +100,7 @@ void show_history()
     }
 }
 
+// Function to replace environment variables in the command
 void replace_env_vars(char *command)
 {
     char buffer[MAX_LINE];
@@ -121,6 +136,7 @@ void replace_env_vars(char *command)
     }
 }
 
+// Function to execute a single command
 void execute_command(char *command)
 {
     char *args[MAX_ARGS]; // Array to store command and its arguments
@@ -128,7 +144,7 @@ void execute_command(char *command)
     int i = 0;
     int background = 0;
 
-    // Check for redirection
+    // Variables for input/output redirection
     char *infile = NULL;            // Input file for redirection
     char *outfile = NULL;           // Output file for redirection
     char *appendfile = NULL;        // Output file for appending
@@ -196,6 +212,7 @@ void execute_command(char *command)
     {
         if (args[1] == NULL)
         {
+            // Display all aliases
             for (int j = 0; j < alias_count; j++)
             {
                 printf("alias %s='%s'\n", aliases[j].name, aliases[j].command);
@@ -203,6 +220,7 @@ void execute_command(char *command)
         }
         else
         {
+            // Set a new alias
             char *name = strtok(args[1], "=");
             char *command = strtok(NULL, "=");
             if (name && command)
@@ -222,6 +240,7 @@ void execute_command(char *command)
         }
         else
         {
+            // Remove an alias
             for (int j = 0; j < alias_count; j++)
             {
                 if (strcmp(aliases[j].name, args[1]) == 0)
@@ -300,6 +319,7 @@ void execute_command(char *command)
     }
 }
 
+// Function to execute a pipeline of commands
 void execute_pipeline(char *command)
 {
     char *commands[MAX_ARGS]; // Array to store individual commands in the pipeline
@@ -399,6 +419,7 @@ void execute_pipeline(char *command)
     }
 }
 
+// Function to generate the shell prompt
 char *get_prompt(double exec_time)
 {
     static char prompt[MAX_LINE];
@@ -422,13 +443,14 @@ char *get_prompt(double exec_time)
     strncpy(short_cwd, cwd, sizeof(short_cwd) - 1);
     short_cwd[sizeof(short_cwd) - 1] = '\0';
 
-    // create the prompt string
+    // create the prompt string with color coding
     snprintf(prompt, sizeof(prompt), "\033[1;32m%s@%s\033[0m:\033[1;34m%s\033[0m$ \033[1;31m[%.2fs]\033[0m ",
              short_username, short_hostname, short_cwd, exec_time);
 
     return prompt;
 }
 
+// Function to save aliases to a file
 void save_aliases()
 {
     FILE *file = fopen(".aliases", "w");
@@ -444,6 +466,7 @@ void save_aliases()
     fclose(file);
 }
 
+// Function to load aliases from a file
 void load_aliases()
 {
     FILE *file = fopen(".aliases", "r");
@@ -466,6 +489,7 @@ void load_aliases()
     fclose(file);
 }
 
+// Function to save command history to a file
 void save_history()
 {
     FILE *file = fopen(".history", "w");
@@ -481,6 +505,7 @@ void save_history()
     fclose(file);
 }
 
+// Function to load command history from a file
 void load_history()
 {
     FILE *file = fopen(".history", "r");
@@ -496,20 +521,7 @@ void load_history()
     fclose(file);
 }
 
-void auto_complete(char *command)
-{
-    // Simple auto-complete for built-in commands
-    const char *builtins[] = {"cd", "pwd", "ls", "history", "alias", "unalias", "exit", "help", NULL};
-    for (int i = 0; builtins[i] != NULL; i++)
-    {
-        if (strncmp(command, builtins[i], strlen(command)) == 0)
-        {
-            strcpy(command, builtins[i]);
-            return;
-        }
-    }
-}
-
+// Main function - shell entry point
 int main(void)
 {
     print_welcome_message(); // Print welcome message
@@ -559,9 +571,6 @@ int main(void)
             show_help();
             continue;
         }
-
-        // Auto-complete command
-        auto_complete(command);
 
         // Replace environment variables
         replace_env_vars(command);
