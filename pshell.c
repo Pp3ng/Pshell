@@ -12,21 +12,21 @@
 #include <time.h>
 #include <sys/time.h>
 #include <errno.h>
-#include <glob.h> //wildcard expansion
+#include <glob.h> //ldcard expansion
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
 
-// Shell configuration constants
-#define MAX_LINE 2048           // Increased for longer commands
-#define MAX_ARGS 128            // Increased for more complex commands
-#define HISTORY_SIZE 1000       // Increased history size
-#define ALIAS_SIZE 200          // Increased alias capacity
-#define MAX_PIPELINE 10         // Maximum commands in pipeline
-#define PROMPT_BUFFER_SIZE 4096 // Increased prompt buffer size
+// shell configuration constants
+#define MAX_LINE 2048           // increased for longer commands
+#define MAX_ARGS 128            // increased for more complex commands
+#define HISTORY_SIZE 1000       // increased history size
+#define ALIAS_SIZE 200          // increased alias capacity
+#define MAX_PIPELINE 10         // maximum commands in pipeline
+#define PROMPT_BUFFER_SIZE 4096 // increased prompt buffer size
 
-// ANSI color codes for better readability
+// ansi color codes for better readability
 #define COLOR_RED "\033[1;31m"
 #define COLOR_GREEN "\033[1;32m"
 #define COLOR_YELLOW "\033[1;33m"
@@ -39,7 +39,7 @@
     {                       \
         perror(msg);        \
         exit(EXIT_FAILURE); \
-    } while (0) // Error handling macro
+    } while (0) // error handling macro
 
 char *safe_strdup(const char *str)
 {
@@ -54,14 +54,14 @@ char *safe_strdup(const char *str)
     return newstr;
 }
 
-// Command execution status
+// command execution status
 typedef enum
 {
     SUCCESS = 0,
     ERROR = -1
 } ExecutionStatus;
 
-// Command type enumeration
+// command type enumeration
 typedef enum
 {
     CMD_NORMAL,
@@ -70,14 +70,14 @@ typedef enum
     CMD_BACKGROUND
 } CommandType;
 
-// Alias structure
+// alias structure
 typedef struct
 {
     char *name;
     char *command;
 } Alias;
 
-// Shell state structure
+// shell state structure
 typedef struct
 {
     char *history[HISTORY_SIZE];
@@ -88,16 +88,16 @@ typedef struct
     int exit_flag;
 } ShellState;
 
-// Global shell state
+// global shell state
 ShellState shell_state = {0};
 
-// Forward declarations of key functions
+// forward declarations of key functions
 void execute_command(char *command);
 void execute_pipeline(char *command);
 ExecutionStatus handle_builtin(char **args);
 void handle_signal(int sig);
 
-// Signal handler implementation
+// signal handler implementation
 void handle_signal(int sig)
 {
     if (sig == SIGINT)
@@ -107,7 +107,7 @@ void handle_signal(int sig)
     fflush(stdout); // flush the output buffer
 }
 
-// Enhanced welcome message with version info and ASCII art
+// welcome message
 void print_welcome_message(void)
 {
     printf("%s", COLOR_CYAN);
@@ -119,7 +119,7 @@ void print_welcome_message(void)
     printf("%s", COLOR_RESET);
 }
 
-// Improved help message with categories
+// show help message
 void show_help(void)
 {
     printf("%sBuilt-in Commands:%s\n", COLOR_YELLOW, COLOR_RESET);
@@ -139,7 +139,250 @@ void show_help(void)
     printf("  • Custom aliases\n");
 }
 
-// History management functions
+// job states
+typedef enum
+{
+    JOB_RUNNING, // currently running
+    JOB_STOPPED, // stopped by signal
+    JOB_DONE     // completed
+} JobState;
+
+// job structure
+typedef struct job
+{
+    pid_t pid;        // process ID
+    int job_id;       // job ID
+    JobState state;   // current state
+    char *command;    // command string
+    struct job *next; // next job in list
+} Job;
+
+// global job list
+Job *job_list = NULL;
+int next_job_id = 1;
+
+// get job by pid
+Job *get_job_by_pid(pid_t pid)
+{
+    Job *job = job_list;
+    while (job != NULL)
+    {
+        if (job->pid == pid)
+        {
+            return job;
+        }
+        job = job->next;
+    }
+    return NULL;
+}
+
+// get job by job id
+Job *get_job_by_jid(int jid)
+{
+    Job *job = job_list;
+    while (job != NULL)
+    {
+        if (job->job_id == jid)
+        {
+            return job;
+        }
+        job = job->next;
+    }
+    return NULL;
+}
+
+// add new job to list
+Job *add_job(pid_t pid, JobState state, const char *command)
+{
+    Job *job = malloc(sizeof(Job));
+    if (!job)
+        return NULL;
+
+    job->pid = pid;
+    job->job_id = next_job_id++;
+    job->state = state;
+    job->command = strdup(command);
+    job->next = job_list;
+    job_list = job;
+
+    return job;
+}
+
+// remove job from list
+void remove_job(Job *job)
+{
+    Job **curr = &job_list;
+    while (*curr != NULL)
+    {
+        if (*curr == job)
+        {
+            *curr = job->next;
+            free(job->command);
+            free(job);
+            return;
+        }
+        curr = &((*curr)->next);
+    }
+}
+
+// update job state
+void update_job_state(pid_t pid, JobState state)
+{
+    Job *job = get_job_by_pid(pid);
+    if (job)
+    {
+        job->state = state;
+    }
+}
+
+// list all jobs
+void list_jobs()
+{
+    Job *job = job_list;
+    while (job != NULL)
+    {
+        const char *state_str = "";
+        switch (job->state)
+        {
+        case JOB_RUNNING:
+            state_str = "Running";
+            break;
+        case JOB_STOPPED:
+            state_str = "Stopped";
+            break;
+        case JOB_DONE:
+            state_str = "Done";
+            break;
+        }
+        printf("[%d] %s\tPID: %d\t%s\n",
+               job->job_id, state_str, job->pid, job->command);
+        job = job->next;
+    }
+}
+
+// job control signal handlers
+void sigchld_handler(int sig)
+{
+    pid_t pid;
+    int status;
+
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0)
+    {
+        if (WIFEXITED(status))
+        {
+            update_job_state(pid, JOB_DONE);
+        }
+        else if (WIFSTOPPED(status))
+        {
+            update_job_state(pid, JOB_STOPPED);
+            Job *job = get_job_by_pid(pid);
+            if (job)
+            {
+                printf("\n[%d] Stopped\t%s\n", job->job_id, job->command);
+            }
+        }
+        else if (WIFCONTINUED(status))
+        {
+            update_job_state(pid, JOB_RUNNING);
+        }
+    }
+}
+
+// initialize job control
+void init_job_control()
+{
+    // put shell in its own process group
+    pid_t shell_pgid = getpid();
+    if (setpgid(shell_pgid, shell_pgid) < 0)
+    {
+        perror("setpgid failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // take control of the terminal
+    tcsetpgrp(STDIN_FILENO, shell_pgid);
+
+    // ignore interactive and job-control signals
+    signal(SIGTTOU, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+    signal(SIGTSTP, SIG_IGN);
+    signal(SIGINT, SIG_IGN);
+    signal(SIGQUIT, SIG_IGN);
+    signal(SIGCHLD, sigchld_handler);
+}
+
+// handle the fg command
+int handle_fg(char **args)
+{
+    if (!args[1])
+    {
+        fprintf(stderr, "fg: job id required\n");
+        return ERROR;
+    }
+
+    int jid = atoi(args[1]);
+    Job *job = get_job_by_jid(jid);
+    if (!job)
+    {
+        fprintf(stderr, "fg: job %d not found\n", jid);
+        return ERROR;
+    }
+
+    // continue the process
+    if (kill(-job->pid, SIGCONT) < 0)
+    {
+        perror("kill (SIGCONT)");
+        return ERROR;
+    }
+
+    // wait for it to finish or stop
+    int status;
+    if (waitpid(job->pid, &status, WUNTRACED) < 0)
+    {
+        perror("waitpid");
+        return ERROR;
+    }
+
+    return SUCCESS;
+}
+
+// handle the bg command
+int handle_bg(char **args)
+{
+    if (!args[1])
+    {
+        fprintf(stderr, "bg: job id required\n");
+        return ERROR;
+    }
+
+    int jid = atoi(args[1]);
+    Job *job = get_job_by_jid(jid);
+    if (!job)
+    {
+        fprintf(stderr, "bg: job %d not found\n", jid);
+        return ERROR;
+    }
+
+    if (kill(-job->pid, SIGCONT) < 0)
+    {
+        perror("kill (SIGCONT)");
+        return ERROR;
+    }
+
+    job->state = JOB_RUNNING;
+    printf("[%d] %s &\n", job->job_id, job->command);
+
+    return SUCCESS;
+}
+
+// handle the jobs command
+int handle_jobs(char **args)
+{
+    list_jobs();
+    return SUCCESS;
+}
+
+// history management functions
 void add_to_history(const char *command)
 {
     if (!command || !*command)
@@ -156,7 +399,7 @@ void add_to_history(const char *command)
     shell_state.history[shell_state.history_count++] = strdup(command);
 }
 
-// Enhanced environment variable replacement
+// enhanced environment variable replacement
 void replace_env_vars(char *command)
 {
     static char buffer[MAX_LINE];
@@ -200,7 +443,7 @@ void replace_env_vars(char *command)
     }
 }
 
-// Improved command execution with error handling
+// improved command execution with error handling
 ExecutionStatus execute_single_command(char **args,
                                        char *infile,
                                        char *outfile,
@@ -215,8 +458,50 @@ ExecutionStatus execute_single_command(char **args,
     }
 
     if (pid == 0)
-    { // Child process
-        // Handle input redirection
+    { // child process
+        // put the process in its own process group
+        if (setpgid(0, 0) < 0)
+        {
+            HANDLE_ERROR("setpgid");
+        }
+
+        if (!background)
+        {
+            // give the terminal control to the child process
+            if (tcsetpgrp(STDIN_FILENO, getpid()) < 0)
+            {
+                HANDLE_ERROR("tcsetpgrp");
+            }
+        }
+
+        // reset signal handlers for child process
+        signal(SIGINT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+        signal(SIGTSTP, SIG_DFL);
+        signal(SIGTTIN, SIG_DFL);
+        signal(SIGTTOU, SIG_DFL);
+        signal(SIGCHLD, SIG_DFL);
+
+        // for background process,redirect the standard input to /dev/null if not already redirected
+        if (background && !outfile && !appendfile)
+        {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull < 0)
+            {
+                HANDLE_ERROR("open /dev/null");
+            }
+            if (dup2(devnull, STDOUT_FILENO) < 0)
+            {
+                HANDLE_ERROR("dup2 stdout");
+            }
+            if (dup2(devnull, STDERR_FILENO) < 0)
+            {
+                HANDLE_ERROR("dup2 stderr");
+            }
+            close(devnull);
+        }
+
+        // handle input redirection
         if (infile)
         {
             int fd = open(infile, O_RDONLY);
@@ -231,7 +516,7 @@ ExecutionStatus execute_single_command(char **args,
             close(fd);
         }
 
-        // Handle output redirection
+        // handle output redirection
         if (outfile)
         {
             int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -246,6 +531,7 @@ ExecutionStatus execute_single_command(char **args,
             close(fd);
         }
 
+        // handle append redirection
         if (appendfile)
         {
             int fd = open(appendfile, O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -253,29 +539,82 @@ ExecutionStatus execute_single_command(char **args,
             {
                 HANDLE_ERROR("Append redirection failed");
             }
-            dup2(fd, STDOUT_FILENO);
+            if (dup2(fd, STDOUT_FILENO) < 0)
+            {
+                HANDLE_ERROR("dup2");
+            }
             close(fd);
         }
 
+        // execute the command
         execvp(args[0], args);
         fprintf(stderr, "%sCommand not found: %s (%s)%s\n",
                 COLOR_RED, args[0], strerror(errno), COLOR_RESET);
         exit(EXIT_FAILURE);
     }
 
-    // Parent process
-    if (!background)
+    // parent process
+    // ensure child is in its own process group
+    if (setpgid(pid, pid) < 0)
     {
-        int status;
-        waitpid(pid, &status, 0);
-        return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? SUCCESS : ERROR;
+        // ignore EACCES error which can happen if child has already executed
+        if (errno != EACCES)
+        {
+            HANDLE_ERROR("setpgid");
+        }
     }
 
-    printf("[%d] Background process started\n", pid);
-    return SUCCESS;
+    // create command string for job list
+    char cmd_str[MAX_LINE] = "";
+    for (int i = 0; args[i] != NULL; i++)
+    {
+        strcat(cmd_str, args[i]);
+        strcat(cmd_str, " ");
+    }
+
+    if (!background)
+    {
+        // give terminal control to the child process group
+        if (tcsetpgrp(STDIN_FILENO, pid) < 0)
+        {
+            HANDLE_ERROR("tcsetpgrp");
+        }
+
+        // wait for foreground process
+        int status;
+        pid_t wait_pid = waitpid(pid, &status, WUNTRACED);
+
+        // take back terminal control
+        if (tcsetpgrp(STDIN_FILENO, getpid()) < 0)
+        {
+            HANDLE_ERROR("tcsetpgrp");
+        }
+
+        if (wait_pid == -1)
+        {
+            HANDLE_ERROR("waitpid");
+        }
+
+        if (WIFSTOPPED(status))
+        {
+            // process was stopped (Ctrl+Z), add to job list
+            add_job(pid, JOB_STOPPED, cmd_str);
+            printf("\n[%d] Stopped\t%s\n", next_job_id - 1, cmd_str);
+            return SUCCESS;
+        }
+
+        return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? SUCCESS : ERROR;
+    }
+    else
+    {
+        // add background process to job list
+        add_job(pid, JOB_RUNNING, cmd_str);
+        printf("[%d] %d\t%s &\n", next_job_id - 1, pid, cmd_str);
+        return SUCCESS;
+    }
 }
 
-// Enhanced command parser
+// parse commands (< > | >> & *)
 void parse_command(char *command,
                    char **args,
                    int *arg_count,
@@ -316,7 +655,7 @@ void parse_command(char *command,
             glob_t glob_result; // for wildcard expansion
             int glob_ret = glob(token, GLOB_NOCHECK | GLOB_TILDE, NULL, &glob_result);
 
-            if (0 == glob_ret) // a friend tell me this trick to avoid stupid error
+            if (0 == glob_ret) // my friend tell me this trick to avoid stupid error
             {
                 for (size_t i = 0; i < glob_result.gl_pathc && *arg_count < MAX_ARGS - 1; i++)
                 {
@@ -334,7 +673,7 @@ void parse_command(char *command,
     args[*arg_count] = NULL;
 }
 
-// Improved pipeline execution
+// improved pipeline execution
 void execute_pipeline(char *command)
 {
     char *commands[MAX_PIPELINE];
@@ -363,25 +702,25 @@ void execute_pipeline(char *command)
         pid_t pid = fork();
         if (pid == 0)
         {
-            // Configure pipe input
+            // configure pipe input
             if (i > 0)
             {
                 dup2(pipes[i - 1][0], STDIN_FILENO);
             }
-            // Configure pipe output
+            // configure pipe output
             if (i < cmd_count - 1)
             {
                 dup2(pipes[i][1], STDOUT_FILENO);
             }
 
-            // Close all pipe fds
+            // close all pipe fds
             for (int j = 0; j < cmd_count - 1; j++)
             {
                 close(pipes[j][0]);
                 close(pipes[j][1]);
             }
 
-            // Parse and execute command
+            // parse and execute command
             char *args[MAX_ARGS];
             int arg_count;
             char *infile, *outfile, *appendfile;
@@ -390,12 +729,12 @@ void execute_pipeline(char *command)
             parse_command(commands[i], args, &arg_count,
                           &infile, &outfile, &appendfile, &background);
 
-            // Handle builtin commands
+            // handle builtin commands
             if (handle_builtin(args) == SUCCESS)
             {
                 exit(EXIT_SUCCESS);
             }
-            // Execute external command
+            // execute external command
             if (execvp(args[0], args) < 0)
             {
                 fprintf(stderr, "%sPipeline command failed: %s%s\n",
@@ -410,21 +749,21 @@ void execute_pipeline(char *command)
         }
     }
 
-    // Close all pipe fds in parent
+    // close all pipe fds in parent
     for (int i = 0; i < cmd_count - 1; i++)
     {
         close(pipes[i][0]);
         close(pipes[i][1]);
     }
 
-    // Wait for all processes
+    // wait for all processes
     for (int i = 0; i < cmd_count; i++)
     {
         wait(NULL);
     }
 }
 
-// Enhanced prompt generation
+// enhanced prompt generation
 char *get_prompt(void)
 {
     static char prompt[PROMPT_BUFFER_SIZE];
@@ -446,10 +785,10 @@ char *get_prompt(void)
     return prompt;
 }
 
-// File operations for persistence
+// file operations for persistence
 void save_shell_state(void)
 {
-    // Save history
+    // save history
     FILE *hist_file = fopen(".ps_history", "w");
     if (hist_file)
     {
@@ -460,7 +799,7 @@ void save_shell_state(void)
         fclose(hist_file);
     }
 
-    // Save aliases
+    // save aliases
     FILE *alias_file = fopen(".ps_aliases", "w");
     if (alias_file)
     {
@@ -476,7 +815,7 @@ void save_shell_state(void)
 
 void load_shell_state(void)
 {
-    // Load history
+    // load history
     FILE *hist_file = fopen(".ps_history", "r");
     if (hist_file)
     {
@@ -488,7 +827,7 @@ void load_shell_state(void)
         fclose(hist_file);
     }
 
-    // Load aliases
+    // load aliases
     FILE *alias_file = fopen(".ps_aliases", "r");
     if (alias_file)
     {
@@ -509,7 +848,7 @@ void load_shell_state(void)
     }
 }
 
-// Builtin command handling
+// builtin command handling
 ExecutionStatus handle_builtin(char **args)
 {
     if (!args[0])
@@ -520,7 +859,7 @@ ExecutionStatus handle_builtin(char **args)
     {
         if (!args[1])
         {
-            // Change to home directory if no argument
+            // change to home directory if no argument
             const char *home = getenv("HOME");
             if (home && chdir(home) != 0)
             {
@@ -555,7 +894,7 @@ ExecutionStatus handle_builtin(char **args)
         for (int i = 0; i < shell_state.history_count; i++)
         {
             char *history_entry = shell_state.history[i];
-            // Remove newline character
+            // remove newline character
             size_t len = strlen(history_entry);
             if (len > 0 && history_entry[len - 1] == '\n')
             {
@@ -567,6 +906,23 @@ ExecutionStatus handle_builtin(char **args)
                     history_entry);
         }
         return SUCCESS;
+    }
+
+    // jobs command
+
+    if (strcmp(args[0], "jobs") == 0)
+    {
+        return handle_jobs(args);
+    }
+
+    if (strcmp(args[0], "fg") == 0)
+    {
+        return handle_fg(args);
+    }
+
+    if (strcmp(args[0], "bg") == 0)
+    {
+        return handle_bg(args);
     }
 
     // help command
@@ -581,7 +937,7 @@ ExecutionStatus handle_builtin(char **args)
     {
         if (!args[1])
         {
-            // Show all aliases
+            // show all aliases
             for (int i = 0; i < shell_state.alias_count; i++)
             {
                 printf("alias %s='%s'\n",
@@ -591,7 +947,7 @@ ExecutionStatus handle_builtin(char **args)
             return SUCCESS;
         }
 
-        // Add new alias
+        // add new alias
         char *eq_pos = strchr(args[1], '=');
         if (!eq_pos)
         {
@@ -603,7 +959,7 @@ ExecutionStatus handle_builtin(char **args)
         char *name = args[1];
         char *command = eq_pos + 1;
 
-        // Update existing alias or add new one
+        // update existing alias or add new one
         int found = 0;
         for (int i = 0; i < shell_state.alias_count; i++)
         {
@@ -661,10 +1017,10 @@ ExecutionStatus handle_builtin(char **args)
         return SUCCESS;
     }
 
-    return ERROR; // Not a builtin command
+    return ERROR; // not a builtin command
 }
 
-// Command execution with alias expansion
+// command execution with alias expansion
 void execute_command(char *command)
 {
     char *args[MAX_ARGS];
@@ -673,10 +1029,10 @@ void execute_command(char *command)
     int background;
     struct timeval start, end;
 
-    // Timing start
+    // timing start
     gettimeofday(&start, NULL);
 
-    // Process alias
+    // process alias
     char *alias_cmd = NULL;
     char *first_word = strtok(strdup(command), " \t\n");
     if (first_word)
@@ -698,60 +1054,61 @@ void execute_command(char *command)
         free(first_word);
     }
 
-    // Handle environment variables
+    // handle environment variables
     replace_env_vars(command);
 
-    // Parse the command
+    // parse the command
     parse_command(command, args, &arg_count, &infile,
                   &outfile, &appendfile, &background);
 
     if (arg_count > 0)
     {
-        // Try builtin commands first
+        // try builtin commands first
         if (handle_builtin(args) == ERROR)
         {
-            // Not a builtin, execute as external command
+            // not a builtin, execute as external command
             execute_single_command(args, infile, outfile,
                                    appendfile, background);
         }
     }
 
-    // Cleanup
+    // cleanup
     for (int i = 0; i < arg_count; i++)
     {
         free(args[i]);
     }
     free(alias_cmd);
 
-    // Timing end
+    // timing end
     gettimeofday(&end, NULL);
     shell_state.last_exec_time =
         (end.tv_sec - start.tv_sec) +
         (end.tv_usec - start.tv_usec) / 1e6;
 }
 
-// Complete main function
+// complete main function
 int main(void)
 {
     char command[MAX_LINE];
 
-    // Initialize shell
+    // initialize shell
     print_welcome_message();
     signal(SIGINT, handle_signal);
     load_shell_state();
+    init_job_control();
 
-    // Main shell loop
+    // main shell loop
     while (!shell_state.exit_flag)
     {
         char *prompt = get_prompt();
-        if (prompt) // Check if successful
+        if (prompt) // check if successful
         {
             printf("%s", prompt);
             fflush(stdout); // ensuer inmediate output
         }
         else
         {
-            printf(">_"); // Fallback prompt if get_prompt fails
+            printf(">_"); // fallback prompt if get_prompt fails
         }
 
         if (!fgets(command, MAX_LINE, stdin))
@@ -768,10 +1125,10 @@ int main(void)
         if (command[0] == '\n')
             continue;
 
-        // Add to history
+        // add to history
         add_to_history(command);
 
-        // Check for pipeline
+        // check for pipeline
         if (strchr(command, '|'))
         {
             struct timeval start, end;
@@ -790,10 +1147,10 @@ int main(void)
         }
     }
 
-    // Cleanup and save state
+    // cleanup and save state
     save_shell_state();
 
-    // Free allocated memory
+    // free allocated memory
     for (int i = 0; i < shell_state.history_count; i++)
     {
         free(shell_state.history[i]);
