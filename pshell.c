@@ -12,7 +12,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <errno.h>
-#include <glob.h> //ldcard expansion
+#include <glob.h> //wildcard expansion(* and ?)
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -86,10 +86,19 @@ typedef struct
     int alias_count;
     double last_exec_time;
     int exit_flag;
+    char *previous_directory;
 } ShellState;
 
 // global shell state
-ShellState shell_state = {0};
+ShellState shell_state = {
+    .history = {NULL},
+    .history_count = 0,
+    .aliases = {{NULL, NULL}},
+    .alias_count = 0,
+    .last_exec_time = 0.0,
+    .exit_flag = 0,
+    .previous_directory = NULL,
+};
 
 // forward declarations of key functions
 void execute_command(char *command);
@@ -104,7 +113,7 @@ void handle_signal(int sig)
     {
         printf("\n%sInterrupted! Type 'exit' to quit.%s 😮\n", COLOR_YELLOW, COLOR_RESET); // 😁
     }
-    fflush(stdout); // flush the output buffer
+    fflush(stdout); // flush output buffer
 }
 
 // welcome message
@@ -112,7 +121,7 @@ void print_welcome_message(void)
 {
     printf("%s", COLOR_CYAN);
     printf("╔════════════════════════════════╗\n");
-    printf("║      Welcome to PShell 2.1     ║\n");
+    printf("║      Welcome to PShell 2.2     ║\n");
     printf("║   Enhanced Edition - 2024      ║\n");
     printf("║   Type 'help' for commands     ║\n");
     printf("╚════════════════════════════════╝\n");
@@ -299,7 +308,7 @@ void init_job_control()
         exit(EXIT_FAILURE);
     }
 
-    // take control of the terminal
+    // take control of terminal
     tcsetpgrp(STDIN_FILENO, shell_pgid);
 
     // ignore interactive and job-control signals
@@ -311,7 +320,7 @@ void init_job_control()
     signal(SIGCHLD, sigchld_handler);
 }
 
-// handle the fg command
+// handle fg command
 int handle_fg(char **args)
 {
     if (!args[1])
@@ -328,7 +337,7 @@ int handle_fg(char **args)
         return ERROR;
     }
 
-    // continue the process
+    // continue process
     if (kill(-job->pid, SIGCONT) < 0)
     {
         perror("kill (SIGCONT)");
@@ -346,7 +355,7 @@ int handle_fg(char **args)
     return SUCCESS;
 }
 
-// handle the bg command
+// handle bg command
 int handle_bg(char **args)
 {
     if (!args[1])
@@ -375,7 +384,7 @@ int handle_bg(char **args)
     return SUCCESS;
 }
 
-// handle the jobs command
+// handle jobs command
 int handle_jobs(char **args)
 {
     list_jobs();
@@ -399,7 +408,7 @@ void add_to_history(const char *command)
     shell_state.history[shell_state.history_count++] = strdup(command);
 }
 
-// enhanced environment variable replacement
+// environment variable replacement
 void replace_env_vars(char *command)
 {
     static char buffer[MAX_LINE];
@@ -459,7 +468,7 @@ ExecutionStatus execute_single_command(char **args,
 
     if (pid == 0)
     { // child process
-        // put the process in its own process group
+        // put process in its own process group
         if (setpgid(0, 0) < 0)
         {
             HANDLE_ERROR("setpgid");
@@ -467,7 +476,7 @@ ExecutionStatus execute_single_command(char **args,
 
         if (!background)
         {
-            // give the terminal control to the child process
+            // give terminal control to child process
             if (tcsetpgrp(STDIN_FILENO, getpid()) < 0)
             {
                 HANDLE_ERROR("tcsetpgrp");
@@ -482,7 +491,7 @@ ExecutionStatus execute_single_command(char **args,
         signal(SIGTTOU, SIG_DFL);
         signal(SIGCHLD, SIG_DFL);
 
-        // for background process,redirect the standard input to /dev/null if not already redirected
+        // for background process,redirect standard input to /dev/null if not already redirected
         if (background && !outfile && !appendfile)
         {
             int devnull = open("/dev/null", O_WRONLY);
@@ -546,7 +555,7 @@ ExecutionStatus execute_single_command(char **args,
             close(fd);
         }
 
-        // execute the command
+        // execute command
         execvp(args[0], args);
         fprintf(stderr, "%sCommand not found: %s (%s)%s\n",
                 COLOR_RED, args[0], strerror(errno), COLOR_RESET);
@@ -574,7 +583,7 @@ ExecutionStatus execute_single_command(char **args,
 
     if (!background)
     {
-        // give terminal control to the child process group
+        // give terminal control to child process group
         if (tcsetpgrp(STDIN_FILENO, pid) < 0)
         {
             HANDLE_ERROR("tcsetpgrp");
@@ -623,10 +632,10 @@ void parse_command(char *command,
                    char **appendfile,
                    int *background)
 {
-    char *token;                             // strtok is used to split the string into tokens
-    *arg_count = 0;                          // initialize the arg_count to 0
-    *infile = *outfile = *appendfile = NULL; // initialize the pointers to NULL
-    *background = 0;                         // initialize the background to 0
+    char *token;                             // strtok is used to split string into tokens
+    *arg_count = 0;                          // initialize arg_count to 0
+    *infile = *outfile = *appendfile = NULL; // initialize pointers to NULL
+    *background = 0;                         // initialize background to 0
 
     token = strtok(command, " \t\n");
     while (token && *arg_count < MAX_ARGS - 1)
@@ -763,13 +772,25 @@ void execute_pipeline(char *command)
     }
 }
 
-// enhanced prompt generation
+// prompt generation
 char *get_prompt(void)
 {
     static char prompt[PROMPT_BUFFER_SIZE];
     char hostname[256];
     char cwd[PATH_MAX];
     struct passwd *pw = getpwuid(getuid());
+
+    // get hostname
+    if (gethostname(hostname, sizeof(hostname)) < 0)
+    {
+        strncpy(hostname, "unknown", sizeof(hostname));
+    }
+
+    // get current working directory
+    if (getcwd(cwd, sizeof(cwd)) == NULL)
+    {
+        strncpy(cwd, "???", sizeof(cwd));
+    }
 
     int written = snprintf(prompt, PROMPT_BUFFER_SIZE,
                            "%s%s@%s%s:%s%s%s$ %s[%.2fs]%s",
@@ -857,21 +878,65 @@ ExecutionStatus handle_builtin(char **args)
     // cd command
     if (strcmp(args[0], "cd") == 0)
     {
-        if (!args[1])
+        char current_dir[PATH_MAX];
+        if (getcwd(current_dir, sizeof(current_dir)) == NULL)
         {
-            // change to home directory if no argument
-            const char *home = getenv("HOME");
-            if (home && chdir(home) != 0)
+            perror("getcwd");
+            return ERROR;
+        }
+
+        const char *target_dir = NULL;
+
+        // no argument or ~ - go to home directory
+        if (!args[1] || (args[1][0] == '~' && args[1][1] == '\0'))
+        {
+            target_dir = getenv("HOME");
+            if (!target_dir)
             {
-                perror("cd");
+                fprintf(stderr, "cd: HOME not set\n");
                 return ERROR;
             }
         }
-        else if (chdir(args[1]) != 0)
+        // handle cd -
+        else if (strcmp(args[1], "-") == 0)
+        {
+            if (!shell_state.previous_directory)
+            {
+                fprintf(stderr, "cd: OLDPWD not set\n");
+                return ERROR;
+            }
+            target_dir = shell_state.previous_directory;
+            printf("%s\n", target_dir); // print directory when using cd -
+        }
+        // handle ~ at start of path
+        else if (args[1][0] == '~' && args[1][1] == '/')
+        {
+            const char *home = getenv("HOME");
+            if (!home)
+            {
+                fprintf(stderr, "cd: HOME not set\n");
+                return ERROR;
+            }
+            static char full_path[PATH_MAX];
+            snprintf(full_path, sizeof(full_path), "%s%s", home, args[1] + 1);
+            target_dir = full_path;
+        }
+        // normal directory
+        else
+        {
+            target_dir = args[1];
+        }
+
+        if (chdir(target_dir) != 0)
         {
             perror("cd");
             return ERROR;
         }
+
+        // update previous directory
+        free(shell_state.previous_directory);
+        shell_state.previous_directory = strdup(current_dir);
+
         return SUCCESS;
     }
 
@@ -898,7 +963,7 @@ ExecutionStatus handle_builtin(char **args)
             size_t len = strlen(history_entry);
             if (len > 0 && history_entry[len - 1] == '\n')
             {
-                history_entry[len - 1] = '\0'; // remove the last character
+                history_entry[len - 1] = '\0'; // remove last character
             }
 
             dprintf(STDOUT_FILENO, "%s%3d%s %s\n",
@@ -1057,7 +1122,7 @@ void execute_command(char *command)
     // handle environment variables
     replace_env_vars(command);
 
-    // parse the command
+    // parse command
     parse_command(command, args, &arg_count, &infile,
                   &outfile, &appendfile, &background);
 
@@ -1160,6 +1225,7 @@ int main(void)
         free(shell_state.aliases[i].name);
         free(shell_state.aliases[i].command);
     }
+    free(shell_state.previous_directory);
 
     return EXIT_SUCCESS;
 }
