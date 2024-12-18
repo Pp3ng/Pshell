@@ -27,9 +27,3 @@ This is a simple shell implementation in C, designed to provide a command-line i
 - `jobs`: List active jobs
 - `exit`: Exit the shell
 - `help`: Display help information about built-in commands
-
-## Usage
-
-1. Clone the repository
-2. Compile: `gcc -o pshell pshell.c`
-3. Run: `./pshell`
