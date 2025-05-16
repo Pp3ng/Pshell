@@ -5,26 +5,26 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
-#include <signal.h>  //  signal
-#include <termios.h> //  struct termios
-#include <limits.h>  //  PATH_MAX
-#include <pwd.h>     //  getpwuid
-#include <time.h>
-#include <sys/time.h>
-#include <errno.h>
-#include <glob.h> //wildcard expansion(* and ?)
+#include <signal.h>   // signal handling
+#include <termios.h>  // terminal control
+#include <limits.h>   // PATH_MAX definition
+#include <pwd.h>      // user information
+#include <time.h>     // time functions
+#include <sys/time.h> // gettimeofday
+#include <errno.h>    // error handling
+#include <glob.h>     // wildcard expansion(* and ?)
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
 
 // shell configuration constants
-#define MAX_LINE 2048           // increased for longer commands
-#define MAX_ARGS 128            // increased for more complex commands
-#define HISTORY_SIZE 1000       // increased history size
-#define ALIAS_SIZE 200          // increased alias capacity
+#define MAX_LINE 2048           //  maximum command line length
+#define MAX_ARGS 128            //  maximum number of arguments
+#define HISTORY_SIZE 1000       //  maximum history size
+#define ALIAS_SIZE 200          //  maximum number of aliases
 #define MAX_PIPELINE 10         // maximum commands in pipeline
-#define PROMPT_BUFFER_SIZE 4096 // increased prompt buffer size
+#define PROMPT_BUFFER_SIZE 4096 // buffer size for prompt
 
 // ansi color codes for better readability
 #define COLOR_RED "\033[1;31m"
@@ -40,6 +40,15 @@
         perror(msg);        \
         exit(EXIT_FAILURE); \
     } while (0) // error handling macro
+
+void log_error(const char *msg, int should_perror)
+{
+    fprintf(stderr, "%sError: %s%s\n", COLOR_RED, msg, COLOR_RESET);
+    if (should_perror)
+    {
+        perror("System error");
+    }
+}
 
 char *safe_strdup(const char *str)
 {
@@ -69,6 +78,17 @@ typedef enum
     CMD_PIPELINE,
     CMD_BACKGROUND
 } CommandType;
+
+typedef struct
+{
+    char *args[MAX_ARGS]; // Command arguments
+    int arg_count;        // Number of arguments
+    char *infile;         // Input redirection file
+    char *outfile;        // Output redirection file
+    char *appendfile;     // Append redirection file
+    int background;       // Whether to run in background
+    CommandType type;     // Type of command
+} Command;
 
 // alias structure
 typedef struct
@@ -121,8 +141,8 @@ void print_welcome_message(void)
 {
     printf("%s", COLOR_CYAN);
     printf("╔════════════════════════════════╗\n");
-    printf("║      Welcome to PShell 2.2     ║\n");
-    printf("║   Enhanced Edition - 2024      ║\n");
+    printf("║      Welcome to PShell!        ║\n");
+    printf("║      Edition:2025.05.16(2.3)   ║\n");
     printf("║   Type 'help' for commands     ║\n");
     printf("╚════════════════════════════════╝\n");
     printf("%s", COLOR_RESET);
@@ -451,18 +471,14 @@ void replace_env_vars(char *command)
     }
 }
 
-// improved command execution with error handling
-ExecutionStatus execute_single_command(char **args,
-                                       char *infile,
-                                       char *outfile,
-                                       char *appendfile,
-                                       int background)
+ExecutionStatus execute_single_command(Command *cmd)
 {
     pid_t pid = fork();
 
     if (pid < 0)
     {
-        HANDLE_ERROR("fork");
+        log_error("Failed to fork process", 1);
+        return ERROR;
     }
 
     if (pid == 0)
@@ -473,7 +489,7 @@ ExecutionStatus execute_single_command(char **args,
             HANDLE_ERROR("setpgid");
         }
 
-        if (!background)
+        if (!cmd->background)
         {
             // give terminal control to child process
             if (tcsetpgrp(STDIN_FILENO, getpid()) < 0)
@@ -490,8 +506,8 @@ ExecutionStatus execute_single_command(char **args,
         signal(SIGTTOU, SIG_DFL);
         signal(SIGCHLD, SIG_DFL);
 
-        // for background process,redirect standard input to /dev/null if not already redirected
-        if (background && !outfile && !appendfile)
+        // for background process, redirect standard output to /dev/null if not already redirected
+        if (cmd->background && !cmd->outfile && !cmd->appendfile)
         {
             int devnull = open("/dev/null", O_WRONLY);
             if (devnull < 0)
@@ -510,9 +526,9 @@ ExecutionStatus execute_single_command(char **args,
         }
 
         // handle input redirection
-        if (infile)
+        if (cmd->infile)
         {
-            int fd = open(infile, O_RDONLY);
+            int fd = open(cmd->infile, O_RDONLY);
             if (fd < 0)
             {
                 HANDLE_ERROR("Input redirection failed");
@@ -525,9 +541,9 @@ ExecutionStatus execute_single_command(char **args,
         }
 
         // handle output redirection
-        if (outfile)
+        if (cmd->outfile)
         {
-            int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            int fd = open(cmd->outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (fd < 0)
             {
                 HANDLE_ERROR("Output redirection failed");
@@ -540,9 +556,9 @@ ExecutionStatus execute_single_command(char **args,
         }
 
         // handle append redirection
-        if (appendfile)
+        if (cmd->appendfile)
         {
-            int fd = open(appendfile, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            int fd = open(cmd->appendfile, O_WRONLY | O_CREAT | O_APPEND, 0644);
             if (fd < 0)
             {
                 HANDLE_ERROR("Append redirection failed");
@@ -555,9 +571,9 @@ ExecutionStatus execute_single_command(char **args,
         }
 
         // execute command
-        execvp(args[0], args);
+        execvp(cmd->args[0], cmd->args);
         fprintf(stderr, "%sCommand not found: %s (%s)%s\n",
-                COLOR_RED, args[0], strerror(errno), COLOR_RESET);
+                COLOR_RED, cmd->args[0], strerror(errno), COLOR_RESET);
         exit(EXIT_FAILURE);
     }
 
@@ -574,13 +590,26 @@ ExecutionStatus execute_single_command(char **args,
 
     // create command string for job list
     char cmd_str[MAX_LINE] = "";
-    for (int i = 0; args[i] != NULL; i++)
+    size_t pos = 0;
+    size_t remaining = MAX_LINE;
+
+    for (int i = 0; cmd->args[i] != NULL; i++)
     {
-        strcat(cmd_str, args[i]);
-        strcat(cmd_str, " ");
+        size_t arg_len = strlen(cmd->args[i]);
+        size_t required = arg_len + 1; // arg + space
+
+        if (remaining > required)
+        {
+            pos += snprintf(cmd_str + pos, remaining, "%s ", cmd->args[i]);
+            remaining = MAX_LINE - pos;
+        }
+        else
+        {
+            break; // Prevent buffer overflow
+        }
     }
 
-    if (!background)
+    if (!cmd->background)
     {
         // give terminal control to child process group
         if (tcsetpgrp(STDIN_FILENO, pid) < 0)
@@ -600,7 +629,11 @@ ExecutionStatus execute_single_command(char **args,
 
         if (wait_pid == -1)
         {
-            HANDLE_ERROR("waitpid");
+            // Check if no child exists before showing error
+            if (errno != ECHILD)
+            {
+                HANDLE_ERROR("waitpid");
+            }
         }
 
         if (WIFSTOPPED(status))
@@ -622,149 +655,151 @@ ExecutionStatus execute_single_command(char **args,
     }
 }
 
-// parse commands (< > | >> & *)
-void parse_command(char *command,
-                   char **args,
-                   int *arg_count,
-                   char **infile,
-                   char **outfile,
-                   char **appendfile,
-                   int *background)
+void parse_command(char *cmd_str, Command *cmd)
 {
-    char *token;                             // strtok is used to split string into tokens
-    *arg_count = 0;                          // initialize arg_count to 0
-    *infile = *outfile = *appendfile = NULL; // initialize pointers to NULL
-    *background = 0;                         // initialize background to 0
+    char *token;
 
-    token = strtok(command, " \t\n");
-    while (token && *arg_count < MAX_ARGS - 1)
+    // Initialize command structure
+    cmd->arg_count = 0;
+    cmd->infile = cmd->outfile = cmd->appendfile = NULL;
+    cmd->background = 0;
+    cmd->type = CMD_NORMAL;
+
+    token = strtok(cmd_str, " \t\n");
+    while (token && cmd->arg_count < MAX_ARGS - 1)
     {
         if (strcmp(token, "<") == 0)
         {
             token = strtok(NULL, " \t\n");
-            *infile = token;
+            cmd->infile = token;
         }
         else if (strcmp(token, ">") == 0)
         {
             token = strtok(NULL, " \t\n");
-            *outfile = token;
+            cmd->outfile = token;
         }
         else if (strcmp(token, ">>") == 0)
         {
             token = strtok(NULL, " \t\n");
-            *appendfile = token;
+            cmd->appendfile = token;
         }
         else if (strcmp(token, "&") == 0)
         {
-            *background = 1;
+            cmd->background = 1;
+            cmd->type = CMD_BACKGROUND;
         }
         else
         {
             glob_t glob_result; // for wildcard expansion
             int glob_ret = glob(token, GLOB_NOCHECK | GLOB_TILDE, NULL, &glob_result);
 
-            if (0 == glob_ret) // my friend tell me this trick to avoid stupid error
+            if (glob_ret == 0)
             {
-                for (size_t i = 0; i < glob_result.gl_pathc && *arg_count < MAX_ARGS - 1; i++)
+                for (size_t i = 0; i < glob_result.gl_pathc && cmd->arg_count < MAX_ARGS - 1; i++)
                 {
-                    args[(*arg_count)++] = safe_strdup(glob_result.gl_pathv[i]);
+                    cmd->args[(cmd->arg_count)++] = safe_strdup(glob_result.gl_pathv[i]);
                 }
                 globfree(&glob_result);
             }
             else
             {
-                args[(*arg_count)++] = safe_strdup(token);
+                cmd->args[(cmd->arg_count)++] = safe_strdup(token);
             }
         }
         token = strtok(NULL, " \t\n");
     }
-    args[*arg_count] = NULL;
+    cmd->args[cmd->arg_count] = NULL;
 }
 
-// improved pipeline execution
-void execute_pipeline(char *command)
+void execute_pipeline(char *cmd_str)
 {
     char *commands[MAX_PIPELINE];
     int cmd_count = 0;
     char *token;
 
-    token = strtok(command, "|");
+    // Split the command string by pipes
+    token = strtok(cmd_str, "|");
     while (token && cmd_count < MAX_PIPELINE)
     {
         commands[cmd_count++] = token;
         token = strtok(NULL, "|");
     }
 
+    // Create pipes for communication
     int pipes[MAX_PIPELINE - 1][2];
     for (int i = 0; i < cmd_count - 1; i++)
     {
         if (pipe(pipes[i]) < 0)
         {
-            perror("pipe");
+            log_error("Failed to create pipe", 1);
             return;
         }
     }
 
+    // Fork and execute each command in the pipeline
     for (int i = 0; i < cmd_count; i++)
     {
         pid_t pid = fork();
-        if (pid == 0)
+        if (pid == 0) // Child process
         {
-            // configure pipe input
+            // Configure pipe input
             if (i > 0)
             {
-                dup2(pipes[i - 1][0], STDIN_FILENO);
-            }
-            // configure pipe output
-            if (i < cmd_count - 1)
-            {
-                dup2(pipes[i][1], STDOUT_FILENO);
+                if (dup2(pipes[i - 1][0], STDIN_FILENO) < 0)
+                {
+                    HANDLE_ERROR("dup2 for pipe input");
+                }
             }
 
-            // close all pipe fds
+            // Configure pipe output
+            if (i < cmd_count - 1)
+            {
+                if (dup2(pipes[i][1], STDOUT_FILENO) < 0)
+                {
+                    HANDLE_ERROR("dup2 for pipe output");
+                }
+            }
+
+            // Close all pipe file descriptors
             for (int j = 0; j < cmd_count - 1; j++)
             {
                 close(pipes[j][0]);
                 close(pipes[j][1]);
             }
 
-            // parse and execute command
-            char *args[MAX_ARGS];
-            int arg_count;
-            char *infile, *outfile, *appendfile;
-            int background;
+            // Parse and execute command
+            Command cmd = {0}; // Initialize with zeros
+            parse_command(commands[i], &cmd);
 
-            parse_command(commands[i], args, &arg_count,
-                          &infile, &outfile, &appendfile, &background);
-
-            // handle builtin commands
-            if (handle_builtin(args) == SUCCESS)
+            // Handle builtin commands
+            if (handle_builtin(cmd.args) == SUCCESS)
             {
                 exit(EXIT_SUCCESS);
             }
-            // execute external command
-            if (execvp(args[0], args) < 0)
+
+            // Execute external command
+            if (execvp(cmd.args[0], cmd.args) < 0)
             {
-                fprintf(stderr, "%sPipeline command failed: %s%s\n",
-                        COLOR_RED, args[0], COLOR_RESET);
+                fprintf(stderr, "%sPipeline command failed: %s (%s)%s\n",
+                        COLOR_RED, cmd.args[0], strerror(errno), COLOR_RESET);
                 exit(EXIT_FAILURE);
             }
         }
         else if (pid < 0)
         {
-            perror("fork");
+            log_error("Failed to fork process for pipeline", 1);
             return;
         }
     }
 
-    // close all pipe fds in parent
+    // Close all pipe file descriptors in parent
     for (int i = 0; i < cmd_count - 1; i++)
     {
         close(pipes[i][0]);
         close(pipes[i][1]);
     }
 
-    // wait for all processes
+    // Wait for all child processes to finish
     for (int i = 0; i < cmd_count; i++)
     {
         wait(NULL);
@@ -814,9 +849,16 @@ void save_shell_state(void)
     {
         for (int i = 0; i < shell_state.history_count; i++)
         {
-            fprintf(hist_file, "%s", shell_state.history[i]);
+            if (shell_state.history[i])
+            { // ensure history entry is not NULL
+                fprintf(hist_file, "%s", shell_state.history[i]);
+            }
         }
         fclose(hist_file);
+    }
+    else
+    {
+        log_error("Could not open history file for writing", 1);
     }
 
     // save aliases
@@ -825,11 +867,18 @@ void save_shell_state(void)
     {
         for (int i = 0; i < shell_state.alias_count; i++)
         {
-            fprintf(alias_file, "%s=%s\n",
-                    shell_state.aliases[i].name,
-                    shell_state.aliases[i].command);
+            if (shell_state.aliases[i].name && shell_state.aliases[i].command)
+            {
+                fprintf(alias_file, "%s=%s\n",
+                        shell_state.aliases[i].name,
+                        shell_state.aliases[i].command);
+            }
         }
         fclose(alias_file);
+    }
+    else
+    {
+        log_error("Could not open aliases file for writing", 1);
     }
 }
 
@@ -1084,21 +1133,14 @@ ExecutionStatus handle_builtin(char **args)
     return ERROR; // not a builtin command
 }
 
-// command execution with alias expansion
-void execute_command(char *command)
+char *process_alias(const char *cmd_str)
 {
-    char *args[MAX_ARGS];
-    int arg_count;
-    char *infile, *outfile, *appendfile;
-    int background;
-    struct timeval start, end;
-
-    // timing start
-    gettimeofday(&start, NULL);
-
-    // process alias
     char *alias_cmd = NULL;
-    char *first_word = strtok(strdup(command), " \t\n");
+    char *cmd_copy = strdup(cmd_str);
+    if (!cmd_copy)
+        return NULL;
+
+    char *first_word = strtok(cmd_copy, " \t\n");
     if (first_word)
     {
         for (int i = 0; i < shell_state.alias_count; i++)
@@ -1106,75 +1148,155 @@ void execute_command(char *command)
             if (strcmp(shell_state.aliases[i].name, first_word) == 0)
             {
                 size_t new_cmd_len = strlen(shell_state.aliases[i].command) +
-                                     strlen(command) + 2;
+                                     strlen(cmd_str) + 2;
                 alias_cmd = malloc(new_cmd_len);
-                snprintf(alias_cmd, new_cmd_len, "%s %s",
-                         shell_state.aliases[i].command,
-                         command + strlen(first_word));
-                command = alias_cmd;
+                if (alias_cmd)
+                {
+                    snprintf(alias_cmd, new_cmd_len, "%s %s",
+                             shell_state.aliases[i].command,
+                             cmd_str + strlen(first_word));
+                }
                 break;
             }
         }
-        free(first_word);
     }
 
-    // handle environment variables
-    replace_env_vars(command);
+    free(cmd_copy);
+    return alias_cmd;
+}
 
-    // parse command
-    parse_command(command, args, &arg_count, &infile,
-                  &outfile, &appendfile, &background);
+char *preprocess_command(const char *orig_cmd)
+{
+    char *processed_cmd = strdup(orig_cmd);
+    if (!processed_cmd)
+        return NULL;
 
-    if (arg_count > 0)
+    // Process alias replacement
+    char *alias_result = process_alias(processed_cmd);
+    if (alias_result)
     {
-        // try builtin commands first
-        if (handle_builtin(args) == ERROR)
+        free(processed_cmd);
+        processed_cmd = alias_result;
+    }
+
+    // Handle environment variables
+    replace_env_vars(processed_cmd);
+
+    return processed_cmd;
+}
+
+void execute_command(char *cmd_str)
+{
+    struct timeval start, end;
+    Command cmd = {0}; // Initialize command structure
+
+    // Start timing
+    gettimeofday(&start, NULL);
+
+    // Preprocess command (handle aliases and environment variables)
+    char *processed_cmd = preprocess_command(cmd_str);
+    if (!processed_cmd)
+    {
+        log_error("Failed to preprocess command", 0);
+        return;
+    }
+
+    // Parse command into structured form
+    parse_command(processed_cmd, &cmd);
+
+    if (cmd.arg_count > 0)
+    {
+        // Try built-in commands first
+        if (handle_builtin(cmd.args) == ERROR)
         {
-            // not a builtin, execute as external command
-            execute_single_command(args, infile, outfile,
-                                   appendfile, background);
+            // Not a built-in, execute as external command
+            execute_single_command(&cmd);
         }
     }
 
-    // cleanup
-    for (int i = 0; i < arg_count; i++)
+    // Cleanup allocated memory
+    for (int i = 0; i < cmd.arg_count; i++)
     {
-        free(args[i]);
+        free(cmd.args[i]);
     }
-    free(alias_cmd);
+    free(processed_cmd);
 
-    // timing end
+    // End timing and update execution time
     gettimeofday(&end, NULL);
     shell_state.last_exec_time =
         (end.tv_sec - start.tv_sec) +
         (end.tv_usec - start.tv_usec) / 1e6;
 }
 
-// complete main function
-int main(void)
+void initialize_shell(void)
 {
-    char command[MAX_LINE];
-
-    // initialize shell
     print_welcome_message();
     signal(SIGINT, handle_signal);
     load_shell_state();
     init_job_control();
+}
 
-    // main shell loop
+void cleanup_shell(void)
+{
+    save_shell_state();
+
+    // Free allocated memory
+    for (int i = 0; i < shell_state.history_count; i++)
+    {
+        free(shell_state.history[i]);
+    }
+    for (int i = 0; i < shell_state.alias_count; i++)
+    {
+        free(shell_state.aliases[i].name);
+        free(shell_state.aliases[i].command);
+    }
+    free(shell_state.previous_directory);
+}
+
+void process_command_line(char *cmd_str)
+{
+    // Ignore empty commands
+    if (cmd_str[0] == '\n')
+        return;
+
+    // Add to history
+    add_to_history(cmd_str);
+
+    // Check for pipeline
+    if (strchr(cmd_str, '|'))
+    {
+        struct timeval start, end;
+        gettimeofday(&start, NULL);
+
+        execute_pipeline(cmd_str);
+
+        gettimeofday(&end, NULL);
+        shell_state.last_exec_time =
+            (end.tv_sec - start.tv_sec) +
+            (end.tv_usec - start.tv_usec) / 1e6;
+    }
+    else
+    {
+        execute_command(cmd_str);
+    }
+}
+
+int main(void)
+{
+    char command[MAX_LINE];
+
+    // Initialize shell environment
+    initialize_shell();
+
+    // Main shell loop
     while (!shell_state.exit_flag)
     {
+        // Display prompt
         char *prompt = get_prompt();
-        if (prompt) // check if successful
-        {
-            printf("%s", prompt);
-            fflush(stdout); // ensuer inmediate output
-        }
-        else
-        {
-            printf(">_"); // fallback prompt if get_prompt fails
-        }
+        printf("%s", prompt);
+        fflush(stdout); // Ensure immediate output
 
+        // Read command
         if (!fgets(command, MAX_LINE, stdin))
         {
             if (feof(stdin))
@@ -1186,45 +1308,12 @@ int main(void)
             continue;
         }
 
-        if (command[0] == '\n')
-            continue;
-
-        // add to history
-        add_to_history(command);
-
-        // check for pipeline
-        if (strchr(command, '|'))
-        {
-            struct timeval start, end;
-            gettimeofday(&start, NULL);
-
-            execute_pipeline(command);
-
-            gettimeofday(&end, NULL);
-            shell_state.last_exec_time =
-                (end.tv_sec - start.tv_sec) +
-                (end.tv_usec - start.tv_usec) / 1e6;
-        }
-        else
-        {
-            execute_command(command);
-        }
+        // Process the command
+        process_command_line(command);
     }
 
-    // cleanup and save state
-    save_shell_state();
-
-    // free allocated memory
-    for (int i = 0; i < shell_state.history_count; i++)
-    {
-        free(shell_state.history[i]);
-    }
-    for (int i = 0; i < shell_state.alias_count; i++)
-    {
-        free(shell_state.aliases[i].name);
-        free(shell_state.aliases[i].command);
-    }
-    free(shell_state.previous_directory);
+    // Clean up before exit
+    cleanup_shell();
 
     return EXIT_SUCCESS;
 }
