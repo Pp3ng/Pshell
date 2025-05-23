@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +15,10 @@
 #include <sys/time.h> // gettimeofday
 #include <errno.h>    // error handling
 #include <glob.h>     // wildcard expansion(* and ?)
+
+#ifndef GLOB_TILDE
+#define GLOB_TILDE 0
+#endif
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -265,7 +271,7 @@ void update_job_state(pid_t pid, JobState state)
 }
 
 // list all jobs
-void list_jobs()
+void list_jobs(void)
 {
     Job *job = job_list;
     while (job != NULL)
@@ -292,6 +298,8 @@ void list_jobs()
 // job control signal handlers
 void sigchld_handler(int sig)
 {
+    (void)sig; // suppress unused parameter warning
+
     pid_t pid;
     int status;
 
@@ -318,7 +326,7 @@ void sigchld_handler(int sig)
 }
 
 // initialize job control
-void init_job_control()
+void init_job_control(void)
 {
     // put shell in its own process group
     pid_t shell_pgid = getpid();
@@ -404,7 +412,7 @@ int handle_bg(char **args)
 }
 
 // handle jobs command
-int handle_jobs(char **args)
+int handle_jobs(void)
 {
     list_jobs();
     return SUCCESS;
@@ -1025,7 +1033,7 @@ ExecutionStatus handle_builtin(char **args)
 
     if (strcmp(args[0], "jobs") == 0)
     {
-        return handle_jobs(args);
+        return handle_jobs();
     }
 
     if (strcmp(args[0], "fg") == 0)
