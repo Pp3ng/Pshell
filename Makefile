@@ -3,20 +3,16 @@ CFLAGS = -Wall -Wextra -O2 -pedantic
 LDFLAGS = 
 TARGET = pshell
 SRC = pshell.c
-OBJ = $(SRC:.c=.o)
 
 .PHONY: all clean run
 
 all: $(TARGET)
 
-$(TARGET): $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
-
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 run: $(TARGET)
 	./$(TARGET)
 
 clean:
-	rm -f $(OBJ) $(TARGET)
+	rm -f $(TARGET) .ps*

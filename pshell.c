@@ -15,6 +15,8 @@
 #include <sys/time.h> // gettimeofday
 #include <errno.h>    // error handling
 #include <glob.h>     // wildcard expansion(* and ?)
+#include <ctype.h>    // for isspace
+#include <stdbool.h>  // for bool type
 
 #ifndef GLOB_TILDE
 #define GLOB_TILDE 0
@@ -28,11 +30,10 @@
 #define MAX_LINE 2048           //  maximum command line length
 #define MAX_ARGS 128            //  maximum number of arguments
 #define HISTORY_SIZE 1000       //  maximum history size
-#define ALIAS_SIZE 200          //  maximum number of aliases
 #define MAX_PIPELINE 10         // maximum commands in pipeline
 #define PROMPT_BUFFER_SIZE 4096 // buffer size for prompt
 
-// ansi color codes for better readability
+// ANSI color codes for better readability
 #define COLOR_RED "\033[1;31m"
 #define COLOR_GREEN "\033[1;32m"
 #define COLOR_YELLOW "\033[1;33m"
@@ -63,10 +64,56 @@ char *safe_strdup(const char *str)
     char *newstr = strdup(str);
     if (!newstr)
     {
-        fprintf(stderr, "%s failed to allocate memory%s\n", COLOR_RED, COLOR_RESET);
+        fprintf(stderr, "%sFailed to allocate memory%s\n", COLOR_RED, COLOR_RESET);
         exit(EXIT_FAILURE);
     }
     return newstr;
+}
+
+void safe_strncpy(char *dest, const char *src, size_t size)
+{
+    if (!dest || !src || size == 0)
+        return;
+
+    strncpy(dest, src, size - 1);
+    dest[size - 1] = '\0';
+}
+
+// Trim leading and trailing whitespace
+char *trim_whitespace(char *str)
+{
+    if (!str)
+        return NULL;
+
+    // Trim leading space
+    while (isspace((unsigned char)*str))
+        str++;
+
+    if (*str == 0) // All spaces?
+        return str;
+
+    // Trim trailing space
+    char *end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char)*end))
+        end--;
+
+    end[1] = '\0';
+    return str;
+}
+
+// Validates if the string is NULL or contains only whitespace characters
+bool is_empty_or_whitespace(const char *str)
+{
+    if (!str)
+        return true;
+
+    while (*str)
+    {
+        if (!isspace((unsigned char)*str))
+            return false;
+        str++;
+    }
+    return true;
 }
 
 // command execution status
@@ -96,20 +143,11 @@ typedef struct
     CommandType type;     // Type of command
 } Command;
 
-// alias structure
-typedef struct
-{
-    char *name;
-    char *command;
-} Alias;
-
 // shell state structure
 typedef struct
 {
     char *history[HISTORY_SIZE];
     int history_count;
-    Alias aliases[ALIAS_SIZE];
-    int alias_count;
     double last_exec_time;
     int exit_flag;
     char *previous_directory;
@@ -119,8 +157,6 @@ typedef struct
 ShellState shell_state = {
     .history = {NULL},
     .history_count = 0,
-    .aliases = {{NULL, NULL}},
-    .alias_count = 0,
     .last_exec_time = 0.0,
     .exit_flag = 0,
     .previous_directory = NULL,
@@ -137,9 +173,9 @@ void handle_signal(int sig)
 {
     if (sig == SIGINT)
     {
-        printf("\n%sInterrupted! Type 'exit' to quit.%s 😮\n", COLOR_YELLOW, COLOR_RESET); // 😁
+        printf("\n%sInterrupted! Type 'exit' to quit.%s 😮\n", COLOR_YELLOW, COLOR_RESET);
+        fflush(stdout); // flush output buffer
     }
-    fflush(stdout); // flush output buffer
 }
 
 // welcome message
@@ -148,7 +184,7 @@ void print_welcome_message(void)
     printf("%s", COLOR_CYAN);
     printf("╔════════════════════════════════╗\n");
     printf("║      Welcome to PShell!        ║\n");
-    printf("║      Edition:2025.05.16(2.3)   ║\n");
+    printf("║      Edition:2025.06.11(2.3)   ║\n");
     printf("║   Type 'help' for commands     ║\n");
     printf("╚════════════════════════════════╝\n");
     printf("%s", COLOR_RESET);
@@ -161,8 +197,6 @@ void show_help(void)
     printf("  cd [dir]      - Change directory\n");
     printf("  pwd           - Print working directory\n");
     printf("  history       - Show command history\n");
-    printf("  alias [name=cmd] - Show/set aliases\n");
-    printf("  unalias name  - Remove an alias\n");
     printf("  exit          - Exit shell\n\n");
 
     printf("%sFeatures:%s\n", COLOR_YELLOW, COLOR_RESET);
@@ -171,7 +205,6 @@ void show_help(void)
     printf("  • Background: command &\n");
     printf("  • Environment variables: $VAR\n");
     printf("  • Command history persistence\n");
-    printf("  • Custom aliases\n");
 }
 
 // job states
@@ -199,14 +232,12 @@ int next_job_id = 1;
 // get job by pid
 Job *get_job_by_pid(pid_t pid)
 {
-    Job *job = job_list;
-    while (job != NULL)
+    for (Job *job = job_list; job != NULL; job = job->next)
     {
         if (job->pid == pid)
         {
             return job;
         }
-        job = job->next;
     }
     return NULL;
 }
@@ -214,14 +245,12 @@ Job *get_job_by_pid(pid_t pid)
 // get job by job id
 Job *get_job_by_jid(int jid)
 {
-    Job *job = job_list;
-    while (job != NULL)
+    for (Job *job = job_list; job != NULL; job = job->next)
     {
         if (job->job_id == jid)
         {
             return job;
         }
-        job = job->next;
     }
     return NULL;
 }
@@ -246,17 +275,17 @@ Job *add_job(pid_t pid, JobState state, const char *command)
 // remove job from list
 void remove_job(Job *job)
 {
-    Job **curr = &job_list;
-    while (*curr != NULL)
+    if (!job)
+        return;
+    for (Job **curr = &job_list; *curr; curr = &(*curr)->next)
     {
         if (*curr == job)
         {
             *curr = job->next;
             free(job->command);
             free(job);
-            return;
+            break;
         }
-        curr = &((*curr)->next);
     }
 }
 
@@ -348,15 +377,15 @@ void init_job_control(void)
 }
 
 // handle fg command
-int handle_fg(char **args)
+ExecutionStatus handle_fg(char **args)
 {
-    if (!args[1])
+    if (!args[1] || is_empty_or_whitespace(args[1]))
     {
         fprintf(stderr, "fg: job id required\n");
         return ERROR;
     }
 
-    int jid = atoi(args[1]);
+    int jid = atoi(trim_whitespace(args[1]));
     Job *job = get_job_by_jid(jid);
     if (!job)
     {
@@ -383,15 +412,15 @@ int handle_fg(char **args)
 }
 
 // handle bg command
-int handle_bg(char **args)
+ExecutionStatus handle_bg(char **args)
 {
-    if (!args[1])
+    if (!args[1] || is_empty_or_whitespace(args[1]))
     {
         fprintf(stderr, "bg: job id required\n");
         return ERROR;
     }
 
-    int jid = atoi(args[1]);
+    int jid = atoi(trim_whitespace(args[1]));
     Job *job = get_job_by_jid(jid);
     if (!job)
     {
@@ -412,7 +441,7 @@ int handle_bg(char **args)
 }
 
 // handle jobs command
-int handle_jobs(void)
+ExecutionStatus handle_jobs(void)
 {
     list_jobs();
     return SUCCESS;
@@ -421,7 +450,7 @@ int handle_jobs(void)
 // history management functions
 void add_to_history(const char *command)
 {
-    if (!command || !*command)
+    if (is_empty_or_whitespace(command))
         return;
 
     if (shell_state.history_count >= HISTORY_SIZE)
@@ -729,7 +758,11 @@ void execute_pipeline(char *cmd_str)
     token = strtok(cmd_str, "|");
     while (token && cmd_count < MAX_PIPELINE)
     {
-        commands[cmd_count++] = token;
+        char *trimmed_cmd = trim_whitespace(token);
+        if (!is_empty_or_whitespace(trimmed_cmd))
+        {
+            commands[cmd_count++] = trimmed_cmd;
+        }
         token = strtok(NULL, "|");
     }
 
@@ -809,9 +842,7 @@ void execute_pipeline(char *cmd_str)
 
     // Wait for all child processes to finish
     for (int i = 0; i < cmd_count; i++)
-    {
         wait(NULL);
-    }
 }
 
 // prompt generation
@@ -825,13 +856,13 @@ char *get_prompt(void)
     // get hostname
     if (gethostname(hostname, sizeof(hostname)) < 0)
     {
-        strncpy(hostname, "unknown", sizeof(hostname));
+        safe_strncpy(hostname, "unknown", sizeof(hostname));
     }
 
     // get current working directory
     if (getcwd(cwd, sizeof(cwd)) == NULL)
     {
-        strncpy(cwd, "???", sizeof(cwd));
+        safe_strncpy(cwd, "???", sizeof(cwd));
     }
 
     int written = snprintf(prompt, PROMPT_BUFFER_SIZE,
@@ -857,9 +888,19 @@ void save_shell_state(void)
     {
         for (int i = 0; i < shell_state.history_count; i++)
         {
-            if (shell_state.history[i])
-            { // ensure history entry is not NULL
-                fprintf(hist_file, "%s", shell_state.history[i]);
+            if (shell_state.history[i] && !is_empty_or_whitespace(shell_state.history[i]))
+            {
+                // Remove existing newline if present, then add a single newline
+                char *history_entry = shell_state.history[i];
+                size_t len = strlen(history_entry);
+                if (len > 0 && history_entry[len - 1] == '\n')
+                {
+                    fprintf(hist_file, "%.*s\n", (int)(len - 1), history_entry);
+                }
+                else
+                {
+                    fprintf(hist_file, "%s\n", history_entry);
+                }
             }
         }
         fclose(hist_file);
@@ -867,26 +908,6 @@ void save_shell_state(void)
     else
     {
         log_error("Could not open history file for writing", 1);
-    }
-
-    // save aliases
-    FILE *alias_file = fopen(".ps_aliases", "w");
-    if (alias_file)
-    {
-        for (int i = 0; i < shell_state.alias_count; i++)
-        {
-            if (shell_state.aliases[i].name && shell_state.aliases[i].command)
-            {
-                fprintf(alias_file, "%s=%s\n",
-                        shell_state.aliases[i].name,
-                        shell_state.aliases[i].command);
-            }
-        }
-        fclose(alias_file);
-    }
-    else
-    {
-        log_error("Could not open aliases file for writing", 1);
     }
 }
 
@@ -899,29 +920,13 @@ void load_shell_state(void)
         char line[MAX_LINE];
         while (fgets(line, sizeof(line), hist_file))
         {
-            add_to_history(line);
-        }
-        fclose(hist_file);
-    }
-
-    // load aliases
-    FILE *alias_file = fopen(".ps_aliases", "r");
-    if (alias_file)
-    {
-        char line[MAX_LINE];
-        while (fgets(line, sizeof(line), alias_file) &&
-               shell_state.alias_count < ALIAS_SIZE)
-        {
-            char *name = strtok(line, "=");
-            char *command = strtok(NULL, "\n");
-            if (name && command)
+            char *trimmed_line = trim_whitespace(line);
+            if (!is_empty_or_whitespace(trimmed_line))
             {
-                shell_state.aliases[shell_state.alias_count].name = strdup(name);
-                shell_state.aliases[shell_state.alias_count].command = strdup(command);
-                shell_state.alias_count++;
+                add_to_history(trimmed_line);
             }
         }
-        fclose(alias_file);
+        fclose(hist_file);
     }
 }
 
@@ -942,9 +947,10 @@ ExecutionStatus handle_builtin(char **args)
         }
 
         const char *target_dir = NULL;
+        char *arg_path = args[1] ? trim_whitespace(args[1]) : NULL;
 
         // no argument or ~ - go to home directory
-        if (!args[1] || (args[1][0] == '~' && args[1][1] == '\0'))
+        if (!arg_path || is_empty_or_whitespace(arg_path) || (arg_path[0] == '~' && arg_path[1] == '\0'))
         {
             target_dir = getenv("HOME");
             if (!target_dir)
@@ -954,7 +960,7 @@ ExecutionStatus handle_builtin(char **args)
             }
         }
         // handle cd -
-        else if (strcmp(args[1], "-") == 0)
+        else if (strcmp(arg_path, "-") == 0)
         {
             if (!shell_state.previous_directory)
             {
@@ -965,7 +971,7 @@ ExecutionStatus handle_builtin(char **args)
             printf("%s\n", target_dir); // print directory when using cd -
         }
         // handle ~ at start of path
-        else if (args[1][0] == '~' && args[1][1] == '/')
+        else if (arg_path[0] == '~' && arg_path[1] == '/')
         {
             const char *home = getenv("HOME");
             if (!home)
@@ -974,13 +980,13 @@ ExecutionStatus handle_builtin(char **args)
                 return ERROR;
             }
             static char full_path[PATH_MAX];
-            snprintf(full_path, sizeof(full_path), "%s%s", home, args[1] + 1);
+            snprintf(full_path, sizeof(full_path), "%s%s", home, arg_path + 1);
             target_dir = full_path;
         }
         // normal directory
         else
         {
-            target_dir = args[1];
+            target_dir = arg_path;
         }
 
         if (chdir(target_dir) != 0)
@@ -1053,83 +1059,6 @@ ExecutionStatus handle_builtin(char **args)
         return SUCCESS;
     }
 
-    // alias command
-    if (strcmp(args[0], "alias") == 0)
-    {
-        if (!args[1])
-        {
-            // show all aliases
-            for (int i = 0; i < shell_state.alias_count; i++)
-            {
-                printf("alias %s='%s'\n",
-                       shell_state.aliases[i].name,
-                       shell_state.aliases[i].command);
-            }
-            return SUCCESS;
-        }
-
-        // add new alias
-        char *eq_pos = strchr(args[1], '=');
-        if (!eq_pos)
-        {
-            fprintf(stderr, "Usage: alias name=command\n");
-            return ERROR;
-        }
-
-        *eq_pos = '\0';
-        char *name = args[1];
-        char *command = eq_pos + 1;
-
-        // update existing alias or add new one
-        int found = 0;
-        for (int i = 0; i < shell_state.alias_count; i++)
-        {
-            if (strcmp(shell_state.aliases[i].name, name) == 0)
-            {
-                free(shell_state.aliases[i].command);
-                shell_state.aliases[i].command = strdup(command);
-                found = 1;
-                break;
-            }
-        }
-
-        if (!found && shell_state.alias_count < ALIAS_SIZE)
-        {
-            shell_state.aliases[shell_state.alias_count].name = strdup(name);
-            shell_state.aliases[shell_state.alias_count].command = strdup(command);
-            shell_state.alias_count++;
-        }
-
-        return SUCCESS;
-    }
-
-    // unalias command
-    if (strcmp(args[0], "unalias") == 0)
-    {
-        if (!args[1])
-        {
-            fprintf(stderr, "Usage: unalias name\n");
-            return ERROR;
-        }
-
-        for (int i = 0; i < shell_state.alias_count; i++)
-        {
-            if (strcmp(shell_state.aliases[i].name, args[1]) == 0)
-            {
-                free(shell_state.aliases[i].name);
-                free(shell_state.aliases[i].command);
-                memmove(&shell_state.aliases[i],
-                        &shell_state.aliases[i + 1],
-                        (shell_state.alias_count - i - 1) * sizeof(Alias));
-                shell_state.alias_count--;
-                return SUCCESS;
-            }
-        }
-
-        fprintf(stderr, "Alias '%s' not found\n", args[1]);
-        return ERROR;
-    }
-
     // exit command
     if (strcmp(args[0], "exit") == 0)
     {
@@ -1141,51 +1070,11 @@ ExecutionStatus handle_builtin(char **args)
     return ERROR; // not a builtin command
 }
 
-char *process_alias(const char *cmd_str)
-{
-    char *alias_cmd = NULL;
-    char *cmd_copy = strdup(cmd_str);
-    if (!cmd_copy)
-        return NULL;
-
-    char *first_word = strtok(cmd_copy, " \t\n");
-    if (first_word)
-    {
-        for (int i = 0; i < shell_state.alias_count; i++)
-        {
-            if (strcmp(shell_state.aliases[i].name, first_word) == 0)
-            {
-                size_t new_cmd_len = strlen(shell_state.aliases[i].command) +
-                                     strlen(cmd_str) + 2;
-                alias_cmd = malloc(new_cmd_len);
-                if (alias_cmd)
-                {
-                    snprintf(alias_cmd, new_cmd_len, "%s %s",
-                             shell_state.aliases[i].command,
-                             cmd_str + strlen(first_word));
-                }
-                break;
-            }
-        }
-    }
-
-    free(cmd_copy);
-    return alias_cmd;
-}
-
 char *preprocess_command(const char *orig_cmd)
 {
     char *processed_cmd = strdup(orig_cmd);
     if (!processed_cmd)
         return NULL;
-
-    // Process alias replacement
-    char *alias_result = process_alias(processed_cmd);
-    if (alias_result)
-    {
-        free(processed_cmd);
-        processed_cmd = alias_result;
-    }
 
     // Handle environment variables
     replace_env_vars(processed_cmd);
@@ -1201,7 +1090,7 @@ void execute_command(char *cmd_str)
     // Start timing
     gettimeofday(&start, NULL);
 
-    // Preprocess command (handle aliases and environment variables)
+    // Preprocess command (handle environment variables)
     char *processed_cmd = preprocess_command(cmd_str);
     if (!processed_cmd)
     {
@@ -1253,18 +1142,14 @@ void cleanup_shell(void)
     {
         free(shell_state.history[i]);
     }
-    for (int i = 0; i < shell_state.alias_count; i++)
-    {
-        free(shell_state.aliases[i].name);
-        free(shell_state.aliases[i].command);
-    }
     free(shell_state.previous_directory);
 }
 
 void process_command_line(char *cmd_str)
 {
-    // Ignore empty commands
-    if (cmd_str[0] == '\n')
+    // Trim whitespace and check if command is empty
+    char *trimmed = trim_whitespace(cmd_str);
+    if (is_empty_or_whitespace(trimmed))
         return;
 
     // Add to history
